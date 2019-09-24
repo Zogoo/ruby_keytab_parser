@@ -129,9 +129,12 @@ class KeyTab
     # flatten counted_octet_string type
     realm_length: UInt16,
     realm: [:realm_length, String],
+    # TODO: array of component structure based on num_components
     # flatten counted_octet_string type
-    components_length: [:num_components, String],
-    components: [:components_length, String],
+    components_length1: UInt16,
+    components1: [:components_length1, String],
+    components_length2: UInt16,
+    components2: [:components_length2, String],
     name_type: UInt32,
     timestamp: UInt32,
     vno8: UInt8,
