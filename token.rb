@@ -1,7 +1,92 @@
+# frozen_string_literal: true
+
 require 'base64'
 require 'openssl'
 require 'byebug'
 
+# C language data types
+class CTypes
+  attr_accessor :bin_val
+
+  def initialize(byte_str, position = 0)
+    sliced_bytes = byte_str.slice!(position, byte_size)
+    sliced_bytes = '' unless sliced_bytes.length >= byte_size
+    self.bin_val = sliced_bytes
+  end
+
+  def to_int
+    bin_val.unpack(unpack_format).first
+  end
+
+  def to_bin_str
+    bin_val.unpack('b*').first
+  end
+
+  def to_hex_str
+    bin_val.unpack('H*').first
+  end
+
+  def unpack_format
+    ''
+  end
+
+  def byte_size
+    0
+  end
+
+  def bing_endian?
+    [1].pack('I') == [1].pack('N')
+  end
+end
+
+# unsigned 8-bit integer
+class UInt8 < CTypes
+  def unpack_format
+    bing_endian? ? 'C<' : 'C>'
+  end
+
+  def byte_size
+    1
+  end
+end
+
+# unsigned 16-bit integer
+class UInt16 < CTypes
+  def unpack_format
+    bing_endian? ? 'S<' : 'S>'
+  end
+
+  def byte_size
+    2
+  end
+end
+
+# signed 32-bit integer
+class Int32 < CTypes
+  def unpack_format
+    bing_endian? ? 'l<' : 'l>'
+  end
+
+  def byte_size
+    4
+  end
+end
+
+# unsigned 32-bit integer
+class UInt32 < CTypes
+  def unpack_format
+    bing_endian? ? 'L<' : 'L>'
+  end
+
+  def byte_size
+    4
+  end
+end
+
+# KeyTab file format from MIT
+# More details from :
+# https://www.gnu.org/software/shishi/manual/html_node/The-Keytab-Binary-File-Format.html
+# https://web.mit.edu/kerberos/krb5-1.12/doc/formats/keytab_file_format.html
 # keytab {
 #     uint16_t file_format_version;                    /* 0x502 */
 #     keytab_entry entries[*];
@@ -29,75 +114,6 @@ require 'byebug'
 #     counted_octet_string;
 # };
 
-class CTypes
-  attr_accessor :bin_val
-
-  def initialize(byte_str, position = 0)
-    self.bin_val = byte_str.slice!(position, byte_size)
-  end
-
-  def to_int
-    bin_val.unpack(unpack_format).first
-  end
-
-  def to_bin_str
-    bin_val.unpack('b*').first
-  end
-
-  def to_hex_str
-    bin_val.unpack('H*').first
-  end
-
-  def unpack_format
-    ''
-  end
-
-  def byte_size
-    0
-  end
-end
-
-class UInt8 < CTypes
-  def unpack_format
-    'v'
-  end
-
-  def byte_size
-    1
-  end
-end
-
-class UInt16 < CTypes
-  def unpack_format
-    'v'
-  end
-
-  def byte_size
-    2
-  end
-end
-
-# signed 32-bit integer (big endian)
-class Int32 < CTypes
-  def unpack_format
-    'l>*'
-  end
-
-  def byte_size
-    4
-  end
-end
-
-class UInt32 < CTypes
-  def unpack_format
-    'v'
-  end
-
-  def byte_size
-    4
-  end
-end
-
 class KeyTab
   attr_accessor :bin_str
   attr_accessor :file_format_version
@@ -110,15 +126,19 @@ class KeyTab
   KEY_LIST = {
     keytab_size: Int32,
     num_components: UInt16,
+    # flatten counted_octet_string type
     realm_length: UInt16,
-    realm: :realm_length,
-    components: :num_components,
+    realm: [:realm_length, String],
+    # flatten counted_octet_string type
+    components_length: [:num_components, String],
+    components: [:components_length, String],
     name_type: UInt32,
     timestamp: UInt32,
     vno8: UInt8,
     keyblock_type: UInt16,
+    # flatten counted_octet_string type
     keyblock_length: UInt16,
-    keyblock_data: :keyblock_length,
+    keyblock_data: [:keyblock_length, String],
     vno: UInt32
   }.freeze
 
@@ -137,7 +157,6 @@ class KeyTab
 
   def parse_entries(bin_content)
     KEY_LIST.map do |key, val|
-      byebug
       key_tab_entries[key] = get_content(bin_content, val)
     end
   end
@@ -145,10 +164,19 @@ class KeyTab
   private
 
   def get_content(bin_content, value)
-    value.is_a?(Symbol) ? bin_content.slice!(0, key_tab_entries[value].to_int) : value.new(bin_content)
+    # Nested content
+    if value.is_a?(Array) && value.first.is_a?(Symbol)
+      len_data = key_tab_entries[value.first]
+      length = len_data.is_a?(String) ? len_data.unpack('c*').join.to_i : len_data.to_int
+      sliced_content = bin_content.slice!(0, length)
+      value[1].new(sliced_content)
+    else
+      value.new(bin_content)
+    end
   end
 end
 
+# DER formatted Kerberos ticket (aka APP-REQ, service ticket)
 class SpnegoToken
   attr_accessor :der_token, :bin_token
   attr_accessor :algorithm_type
