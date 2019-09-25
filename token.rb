@@ -126,7 +126,7 @@ class KeyTab
   }.freeze
 
   KEY_LIST = {
-    keytab_size: Int32,
+    entry_size: Int32,
     num_components: UInt16,
     # flatten counted_octet_string type
     realm_length: UInt16,
@@ -150,21 +150,30 @@ class KeyTab
   }.freeze
 
   def initialize(bin_content)
-    self.key_tab_entries = {}
-    self.bin_str = bin_content.clone
+    self.bin_str = bin_content.dup
     self.file_format_version = parse_file_version(bin_content)
+    self.key_tab_entries = []
     parse_entries(bin_content)
   end
 
   def parse_file_version(bin_content)
-    FILE_FORMAT.map do |key, val|
-      key_tab_entries[key] = val.new(bin_content)
+    FILE_FORMAT.map do |_, val|
+      val.new(bin_content)
     end
   end
 
   def parse_entries(bin_content)
-    KEY_LIST.map do |key, val|
-      set_content(bin_content, key_tab_entries, key, val)
+    until bin_content.empty?
+      kt_entry = {}
+      one_entry = bin_content
+      KEY_LIST.map do |key, val|
+        set_content(one_entry, kt_entry, key, val)
+        # Slice after parse first line length
+        if key == :entry_size && !kt_entry[:entry_size].nil?
+          one_entry = bin_content.slice!(0, kt_entry[:entry_size].int_val)
+        end
+      end
+      key_tab_entries << kt_entry
     end
   end
 
