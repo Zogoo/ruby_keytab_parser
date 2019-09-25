@@ -6,12 +6,13 @@ require 'byebug'
 
 # C language data types
 class CTypes
-  attr_accessor :bin_val
+  attr_accessor :bin_val, :int_val
 
   def initialize(byte_str, position = 0)
     sliced_bytes = byte_str.slice!(position, byte_size)
     sliced_bytes = '' unless sliced_bytes.length >= byte_size
     self.bin_val = sliced_bytes
+    self.int_val = to_int
   end
 
   def to_int
@@ -41,8 +42,9 @@ end
 
 # unsigned 8-bit integer
 class UInt8 < CTypes
+  # One byte char is same as big and little endian
   def unpack_format
-    bing_endian? ? 'C<' : 'C>'
+    'C'
   end
 
   def byte_size
@@ -131,10 +133,12 @@ class KeyTab
     realm: [:realm_length, String],
     # TODO: array of component structure based on num_components
     # flatten counted_octet_string type
-    components_length1: UInt16,
-    components1: [:components_length1, String],
-    components_length2: UInt16,
-    components2: [:components_length2, String],
+    component: [
+      num_components: {
+        component_length: UInt16,
+        component_data: [:component_length, String]
+      }
+    ],
     name_type: UInt32,
     timestamp: UInt32,
     vno8: UInt8,
@@ -160,21 +164,31 @@ class KeyTab
 
   def parse_entries(bin_content)
     KEY_LIST.map do |key, val|
-      key_tab_entries[key] = get_content(bin_content, val)
+      set_content(bin_content, key_tab_entries, key, val)
     end
   end
 
   private
 
-  def get_content(bin_content, value)
+  def set_content(bin_content, key_entries, key, value)
     # Nested content
     if value.is_a?(Array) && value.first.is_a?(Symbol)
-      len_data = key_tab_entries[value.first]
+      len_data = key_entries[value.first]
       length = len_data.is_a?(String) ? len_data.unpack('c*').join.to_i : len_data.to_int
       sliced_content = bin_content.slice!(0, length)
-      value[1].new(sliced_content)
+      key_entries[key] = value[1].new(sliced_content)
+    elsif value.is_a?(Array) && value.first.is_a?(Hash)
+      key_entries[key] = []
+      value.first.map do |sub_length, sub_format|
+        Array.new(key_entries[sub_length].int_val) do |index|
+          key_entries[key] << {}
+          sub_format.map do |sub_key, sub_value|
+            set_content(bin_content, key_entries[key][index], sub_key, sub_value)
+          end
+        end
+      end
     else
-      value.new(bin_content)
+      key_entries[key] = value.new(bin_content)
     end
   end
 end
