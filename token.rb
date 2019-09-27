@@ -3,14 +3,104 @@
 require 'base64'
 require 'openssl'
 
+class BaseSpenego
+  SPNEGO_MECHANISM = '1.3.6.1.5.5.2'
+  KERBEROS_MECHANISM = '1.2.840.113554.1.2.2'
+  LEGACY_KERBEROS_MECHANISM = '1.2.840.48018.1.2.2'
+  NTLMSSP_MECHANISM = '1.3.6.1.4.1.311.2.2.10'
+
+  def get_object(asn_obj)
+    asn_obj.value.find { |data| data.value.is_a?(OpenSSL::ASN1::ObjectId) }
+  end
+
+  def get_data(asn_obj)
+    asn_obj.value.find { |data| data.value.is_a?(OpenSSL::ASN1::ASN1Data) }
+  end
+
+  def get_tagged_objects(asn_obj)
+    obj_array = []
+    temp_obj = asn_obj.value.dup
+    deep_objects(temp_obj, obj_array)
+    obj_array
+  end
+
+  def deep_objects(temp_obj, obj_array)
+    if temp_obj.is_a?(OpenSSL::ASN1::Sequence)
+      temp_obj.each do |obj|
+        obj_array << obj if obj.class.to_s.eql?(OpenSSL::ASN1::ASN1Data.to_s)
+        deep_objects(obj, obj_array) if obj.is_a?(OpenSSL::ASN1::Sequence)
+      end
+    elsif temp_obj.is_a?(Array)
+      temp_obj.each do |obj|
+        # is_a?(OpenSSL::ASN1::ASN1Data) returns true for OpenSSL::ASN1::Sequence object
+        obj_array << obj if obj.class.to_s.eql?(OpenSSL::ASN1::ASN1Data.to_s)
+        deep_objects(obj, obj_array) if obj.is_a?(OpenSSL::ASN1::Sequence)
+      end
+    elsif temp_obj.is_a?(OpenSSL::ASN1::ASN1Data)
+      obj_array << temp_obj
+    end
+  end
+end
+
+class SpnegoInitToken < BaseSpenego
+  attr_accessor :object_id
+  attr_accessor :mechanism_list
+  attr_accessor :mechanism
+  attr_accessor :mechanism_token
+  attr_accessor :context_flag
+  attr_accessor :mechanism_list_str
+
+  def initialize(der_token)
+    self.mechanism_list = []
+    # Object Id of SPNEGO token
+    self.object_id = der_token.value.first.value
+    tagged_array_obj = get_tagged_objects(der_token.value[1])
+    tagged_array_obj.each do |obj|
+      case obj.tag
+      when 0
+        obj.value.first.each do |seq_obj|
+          next unless seq_obj.is_a? OpenSSL::ASN1::ObjectId
+
+          mechanism_list << seq_obj.value
+        end
+      when 1
+        self.context_flag = obj.value if obj.value.is_a? OpenSSL::ASN1::BitString
+      when 2
+        self.mechanism_token = obj.value.first.value if obj.value.first.is_a? OpenSSL::ASN1::OctetString
+      when 3
+        self.mechanism_list_str = obj.value if obj.value.is_a? OpenSSL::ASN1::OctetString
+      end
+    end
+    self.mechanism = mechanism_list.first if mechanism_list.length.positive?
+  end
+end
+
+class SnegoTargToken < BaseSpenego
+  attr_accessor :mechanism_list
+  attr_accessor :mechanism
+  attr_accessor :mechanism_token
+  attr_accessor :result
+
+  def initialize(der_token)
+    tagged_array_obj = get_tagged_objects(der_token.value.first)
+    tagged_array_obj.each do |obj|
+      case obj.tag
+      when 0
+        self.result = obj.value.to_i obj.value.is_a? OpenSSL::ASN1::Enumerated
+      when 1
+        self.mechanism = obj.value if obj.value.is_a? OpenSSL::ASN1::ObjectId
+      when 2
+        self.mechanism_token = obj.value if obj.value.is_a? OpenSSL::ASN1::OctetString
+      when 3
+        self.mechanism_list_str = obj.value if obj.value.is_a? OpenSSL::ASN1::OctetString
+      end
+    end
+  end
+end
+
 # DER formatted Kerberos ticket (aka APP-REQ, service ticket)
 class SpnegoToken
-  attr_accessor :der_token, :bin_token
-  attr_accessor :algorithm_type
-  attr_accessor :init, :resp
-  attr_accessor :der_obj
-
-  attr_accessor :krb5_oid, :krb_ap_req_tag
+  attr_accessor :token
 
   ENCRYPTION_TYPES = {
     1 => 'des-cbc-crc',
@@ -49,43 +139,17 @@ class SpnegoToken
 
   def initialize(encoded_token)
     hex_token = Base64.strict_decode64(encoded_token)
-    self.der_token = OpenSSL::ASN1.decode(hex_token)
-    parse_der_token
-    # self.init = Init.parse(token)
-    # self.resp = Resp.parse(token)
-  end
-
-  def decrypt(password)
-    enc_type = ENCRYPTION_TYPES[algorithm_type]
-    # MD4 hash of the password.
-    if enc_type == 'rc4-hmac'
-      digest = OpenSSL::Digest::MD4.new(password)
-      # hmac = OpenSSL::HMAC.new(password, digest)
+    OpenSSL::ASN1.traverse(hex_token) do | depth, offset, header_len, length, constructed, tag_class, tag|
+      puts "Depth: #{depth} Offset: #{offset} Length: #{length}"
+      puts "Header length: #{header_len} Tag: #{tag} Tag class: #{tag_class} Constructed: #{constructed}"
     end
-    chipher = OpenSSL::Cipher.new(enc_type)
-    chipher.decrypt(bin_token)
-  end
-
-  private
-
-  # 4 level DER format
-  def parse_der_token
-    # Level 0: SPNEGO OID, Level 1
-    lvl0_obj = der_token.value
-    # Level 1: mech types, Level 2
-    lvl1_obj = lvl0_obj.first.value
-    # self.krb5_oid = lvl1_obj.find { |data| data.value&.first.is_a?(OpenSSL::ASN1::Enumerated) }&.value&.first
-    # self.krb_ap_req_tag = lvl1_obj.find { |data| data.value&.first.is_a?(OpenSSL::ASN1::ObjectId) }&.value&.first
-    # Level 2: Kerberos OID, KRB5_AP_REQ, Level 3
-    lvl2_obj = lvl1_obj.find { |data| data.value&.first.is_a?(OpenSSL::ASN1::OctetString) }&.value
-    lvl3_obj = OpenSSL::ASN1.decode(lvl2_obj.first.value)
-    lvl4_obj = lvl3_obj.value.find { |data| data.value.is_a?(Array) }&.value
-
-    lvl5_obj = lvl4_obj.first.value.find { |data| data.value&.first.is_a?(OpenSSL::ASN1::Sequence) }&.value
-    algorithm_obj = lvl5_obj.first.value.find { |data| data.value&.first.is_a?(OpenSSL::ASN1::Integer) }&.value
-    self.algorithm_type = algorithm_obj.first.value.to_i
-    lvl6_obj = lvl5_obj.first.value.find { |data| data.value&.first.is_a?(OpenSSL::ASN1::OctetString) }&.value
-    self.bin_token = lvl6_obj.first.value
+    der_token = OpenSSL::ASN1.decode(hex_token)
+    case hex_token[0].unpack('H*').first
+    when '60'
+      self.token = SpnegoInitToken.new(der_token)
+    when 'a1'
+      self.token = SnegoTargToken.new(der_token)
+    end
   end
 
   def bin_to_hex(str)
