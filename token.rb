@@ -56,19 +56,20 @@ class SpnegoInitToken < BaseSpenego
     self.object_id = der_token.value.first.value
     tagged_array_obj = get_tagged_objects(der_token.value[1])
     tagged_array_obj.each do |obj|
+      value_obj = obj.value.is_a?(Array) ? obj.value.first : obj.value
       case obj.tag
       when 0
-        obj.value.first.each do |seq_obj|
+        value_obj.each do |seq_obj|
           next unless seq_obj.is_a? OpenSSL::ASN1::ObjectId
 
           mechanism_list << seq_obj.value
         end
       when 1
-        self.context_flag = obj.value if obj.value.is_a? OpenSSL::ASN1::BitString
+        self.context_flag = value_obj.value if value_obj.is_a? OpenSSL::ASN1::BitString
       when 2
-        self.mechanism_token = obj.value.first.value if obj.value.first.is_a? OpenSSL::ASN1::OctetString
+        self.mechanism_token = value_obj.value if value_obj.is_a? OpenSSL::ASN1::OctetString
       when 3
-        self.mechanism_list_str = obj.value if obj.value.is_a? OpenSSL::ASN1::OctetString
+        self.mechanism_list_str = value_obj.value if value_obj.is_a? OpenSSL::ASN1::OctetString
       end
     end
     self.mechanism = mechanism_list.first if mechanism_list.length.positive?
@@ -84,15 +85,16 @@ class SnegoTargToken < BaseSpenego
   def initialize(der_token)
     tagged_array_obj = get_tagged_objects(der_token.value.first)
     tagged_array_obj.each do |obj|
+      value_obj = obj.value.is_a?(Array) ? obj.value.first : obj.value
       case obj.tag
       when 0
-        self.result = obj.value.to_i obj.value.is_a? OpenSSL::ASN1::Enumerated
+        self.result = value_obj.value.to_i if value_obj.is_a? OpenSSL::ASN1::Enumerated
       when 1
-        self.mechanism = obj.value if obj.value.is_a? OpenSSL::ASN1::ObjectId
+        self.mechanism = value_obj.value if value_obj.is_a? OpenSSL::ASN1::ObjectId
       when 2
-        self.mechanism_token = obj.value if obj.value.is_a? OpenSSL::ASN1::OctetString
+        self.mechanism_token = value_obj.value if value_obj.is_a? OpenSSL::ASN1::OctetString
       when 3
-        self.mechanism_list_str = obj.value if obj.value.is_a? OpenSSL::ASN1::OctetString
+        self.mechanism_list_str = value_obj.value if value_obj.is_a? OpenSSL::ASN1::OctetString
       end
     end
   end
