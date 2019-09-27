@@ -3,7 +3,8 @@
 require 'base64'
 require 'openssl'
 
-class BaseSpenego
+# Base DER helper functions
+class BaseSpnego
   SPNEGO_MECHANISM = '1.3.6.1.5.5.2'
   KERBEROS_MECHANISM = '1.2.840.113554.1.2.2'
   LEGACY_KERBEROS_MECHANISM = '1.2.840.48018.1.2.2'
@@ -24,6 +25,7 @@ class BaseSpenego
     obj_array
   end
 
+  # Collect tagged object from DER structure
   def deep_objects(temp_obj, obj_array)
     if temp_obj.is_a?(OpenSSL::ASN1::Sequence)
       temp_obj.each do |obj|
@@ -32,6 +34,7 @@ class BaseSpenego
       end
     elsif temp_obj.is_a?(Array)
       temp_obj.each do |obj|
+        # TODO: figure out whats happened in here
         # is_a?(OpenSSL::ASN1::ASN1Data) returns true for OpenSSL::ASN1::Sequence object
         obj_array << obj if obj.class.to_s.eql?(OpenSSL::ASN1::ASN1Data.to_s)
         deep_objects(obj, obj_array) if obj.is_a?(OpenSSL::ASN1::Sequence)
@@ -42,7 +45,8 @@ class BaseSpenego
   end
 end
 
-class SpnegoInitToken < BaseSpenego
+# Initial negotiation message parser
+class NegTokenInit < BaseSpnego
   attr_accessor :object_id
   attr_accessor :mechanism_list
   attr_accessor :mechanism
@@ -76,11 +80,16 @@ class SpnegoInitToken < BaseSpenego
   end
 end
 
-class SnegoTargToken < BaseSpenego
+# This is the syntax for all subsequent negotiation messages.
+class NegTokenResp < BaseSpnego
   attr_accessor :mechanism_list
   attr_accessor :mechanism
   attr_accessor :mechanism_token
   attr_accessor :result
+
+  ACCEPT_COMPLETE = 0
+  ACCEPT_INCOMPLETE = 1
+  REJECT = 2
 
   def initialize(der_token)
     tagged_array_obj = get_tagged_objects(der_token.value.first)
@@ -100,10 +109,40 @@ class SnegoTargToken < BaseSpenego
   end
 end
 
-# DER formatted Kerberos ticket (aka APP-REQ, service ticket)
+# Spnego token parser
+# https://tools.ietf.org/html/rfc4178
 class SpnegoToken
   attr_accessor :token
 
+  def initialize(encoded_token)
+    hex_token = Base64.strict_decode64(encoded_token)
+    # OpenSSL::ASN1.traverse(hex_token) do | depth, offset, header_len, length, constructed, tag_class, tag|
+    #   puts "Depth: #{depth} Offset: #{offset} Length: #{length}"
+    #   puts "Header length: #{header_len} Tag: #{tag} Tag class: #{tag_class} Constructed: #{constructed}"
+    # end
+    der_token = OpenSSL::ASN1.decode(hex_token)
+    # https://tools.ietf.org/html/rfc4178#section-4.2
+    self.token = if der_token.value.first.value == BaseSpnego::SPNEGO_MECHANISM
+                   NegTokenInit.new(der_token)
+                 else
+                   NegTokenResp.new(der_token)
+                 end
+    # Or maybe this
+    # case hex_token[0].unpack('H*').first
+    # when '60'
+    #   self.token = NegTokenInit.new(der_token)
+    # when 'a1'
+    #   self.token = NegTokenResp.new(der_token)
+    # end
+  end
+
+  def bin_to_hex(str)
+    format('0x%02x', str.to_i(2))
+  end
+end
+
+# Kerberos ticket parser
+class KerberosTicket
   ENCRYPTION_TYPES = {
     1 => 'des-cbc-crc',
     2 => 'des-cbc-md4',
@@ -139,22 +178,7 @@ class SpnegoToken
     10 => 'NT-ENTERPRISE'
   }.freeze
 
-  def initialize(encoded_token)
-    hex_token = Base64.strict_decode64(encoded_token)
-    OpenSSL::ASN1.traverse(hex_token) do | depth, offset, header_len, length, constructed, tag_class, tag|
-      puts "Depth: #{depth} Offset: #{offset} Length: #{length}"
-      puts "Header length: #{header_len} Tag: #{tag} Tag class: #{tag_class} Constructed: #{constructed}"
-    end
-    der_token = OpenSSL::ASN1.decode(hex_token)
-    case hex_token[0].unpack('H*').first
-    when '60'
-      self.token = SpnegoInitToken.new(der_token)
-    when 'a1'
-      self.token = SnegoTargToken.new(der_token)
-    end
-  end
-
-  def bin_to_hex(str)
-    format('0x%02x', str.to_i(2))
+  def initialize(hex_kerb_ticket)
+    der_ticket = OpenSSL::ASN1.decode(hex_kerb_ticket)
   end
 end
