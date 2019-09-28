@@ -76,6 +76,7 @@ class NegTokenInit < BaseSpnego
         self.mechanism_list_str = value_obj.value if value_obj.is_a? OpenSSL::ASN1::OctetString
       end
     end
+    # https://tools.ietf.org/html/rfc4178#section-4.2.1 favorite choice first
     self.mechanism = mechanism_list.first if mechanism_list.length.positive?
   end
 end
@@ -141,8 +142,8 @@ class SpnegoToken
   end
 end
 
-# Kerberos ticket parser
-class KerberosTicket
+# Kerberos token parser
+class KerberosToken
   ENCRYPTION_TYPES = {
     1 => 'des-cbc-crc',
     2 => 'des-cbc-md4',
@@ -179,6 +180,12 @@ class KerberosTicket
   }.freeze
 
   def initialize(hex_kerb_ticket)
-    der_ticket = OpenSSL::ASN1.decode(hex_kerb_ticket)
+    # [14] pry(main)> OpenSSL::ASN1.decode(tkn)
+    # OpenSSL::ASN1::ASN1Error: invalid length for BOOLEAN
+    # der_ticket = OpenSSL::ASN1.decode(hex_kerb_ticket)
+    temp = Tempfile.new('temp.der')
+    temp.binmode
+    temp.write(hex_kerb_ticket)
+    exec('openssl asn1parse -inform der -in temp.der')
   end
 end
