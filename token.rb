@@ -117,6 +117,7 @@ class SpnegoToken
 
   def initialize(encoded_token)
     hex_token = Base64.strict_decode64(encoded_token)
+    # TODO: to use traverse API loop over ASN1 data
     # OpenSSL::ASN1.traverse(hex_token) do | depth, offset, header_len, length, constructed, tag_class, tag|
     #   puts "Depth: #{depth} Offset: #{offset} Length: #{length}"
     #   puts "Header length: #{header_len} Tag: #{tag} Tag class: #{tag_class} Constructed: #{constructed}"
@@ -128,6 +129,7 @@ class SpnegoToken
                  else
                    NegTokenResp.new(der_token)
                  end
+    # TODO: Confirm which one is more accurate
     # Or maybe this
     # case hex_token[0].unpack('H*').first
     # when '60'
@@ -142,9 +144,19 @@ class SpnegoToken
   end
 end
 
-# Kerberos token parser
-class KerberosToken
-  ENCRYPTION_TYPES = {
+# KRB_AP_REQ 
+# Specified in https://tools.ietf.org/html/rfc1510#section-5.5.1
+class KerberosApRequest
+  attr_accessor :pvno, :msg_type, :ap_options, :ticket, :authenticator
+
+  def initialize(kerb_token)
+    der_token = OpenSSL::ASN1.decode(kerb_token)
+    tagged_array_obj = get_tagged_objects(der_token.value.first)
+  end
+end
+
+class KerberosTicket
+    ENCRYPTION_TYPES = {
     1 => 'des-cbc-crc',
     2 => 'des-cbc-md4',
     3 => 'des-cbc-md5',
@@ -178,14 +190,51 @@ class KerberosToken
     7 => 'NT-SMTP-NAME',
     10 => 'NT-ENTERPRISE'
   }.freeze
+end
 
-  def initialize(hex_kerb_ticket)
-    # [14] pry(main)> OpenSSL::ASN1.decode(tkn)
-    # OpenSSL::ASN1::ASN1Error: invalid length for BOOLEAN
-    # der_ticket = OpenSSL::ASN1.decode(hex_kerb_ticket)
-    temp = Tempfile.new('temp.der')
-    temp.binmode
-    temp.write(hex_kerb_ticket)
-    exec('openssl asn1parse -inform der -in temp.der')
+# Kerberos token parser
+class KerberosToken
+  attr_accessor :token_id, :kerb_ap_req
+
+  KRB_AP_REQ_TOKEN_ID = '0100'
+  KRB_AP_REP_TOKEN_ID = '0300'
+
+  def initialize(kerb_token)
+    # TODO: I hit another wall in here
+    # decoded_token = OpenSSL::ASN1.decode(kerb_token)
+    # Document says first 2 bype used for id of token 
+    # rest part for actual kerberos token, but not able to decode with ASN1
+    # https://www.ipa.go.jp/security/rfc/RFC1964EN.html
+    # 2 bytes is used for token id
+    self.token_id = decoded_token[0, 2]
+    raise 'Invalid token id' if token_id != KRB_AP_REQ_TOKEN_ID
+
+    self.kerb_ap_req = KerberosApRequest.new(decoded_token[2, der_token.size - 1])
+  end
+end
+
+# Parser with shell command
+class Asn1DecodeResultParser
+  attr_accessor :object_id, :mech_token, :mech_list
+
+  OCTET_STRING_TITLE = 'OCTET STRING      [HEX DUMP]:'
+
+  def initialize(kerb_token)
+    tmp_file = Tempfile.new('temp_token.der')
+    tmp_file.binmode
+    tmp_file.write(kerb_token)
+    tmp_file.close
+    result_str = `openssl asn1parse -inform der -in #{tmp_file.path}`
+    array_str_by_line = result_str.split("\n")
+    octet_index = 0
+    array_str_by_line.each do |line|
+      next unless line.include?(OCTET_STRING_TITLE)
+
+      octet_index += 1
+      start_index = line.index(OCTET_STRING_TITLE) + OCTET_STRING_TITLE.size
+      end_index = line.size - 1
+      self.mech_token = line[start_index, end_index] if octet_index == 1
+      self.mech_list = line[start_index, end_index] if octet_index == 2
+    end
   end
 end
